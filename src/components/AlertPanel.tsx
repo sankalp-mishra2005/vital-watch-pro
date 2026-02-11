@@ -1,4 +1,4 @@
-import { Alert } from '@/lib/mockData';
+import { VitalAlert as Alert } from '@/services/vitalsService';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Bell, AlertTriangle, AlertOctagon } from 'lucide-react';
 import { cn } from '@/lib/utils';

@@ -1,6 +1,6 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import { VitalStatus } from '@/lib/mockData';
+import { VitalStatus } from '@/services/vitalsService';
 import { LucideIcon } from 'lucide-react';
 
 interface Props {
