@@ -1,4 +1,4 @@
-import { VitalStatus } from '@/lib/mockData';
+import { VitalStatus } from '@/services/vitalsService';
 import { cn } from '@/lib/utils';
 
 interface Props {

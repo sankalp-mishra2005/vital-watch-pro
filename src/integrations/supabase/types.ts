@@ -14,16 +14,137 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      audit_logs: {
+        Row: {
+          action: string
+          created_at: string
+          details: Json | null
+          id: string
+          user_id: string | null
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          details?: Json | null
+          id?: string
+          user_id?: string | null
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          details?: Json | null
+          id?: string
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          full_name: string
+          id: string
+          last_seen: string | null
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          full_name?: string
+          id: string
+          last_seen?: string | null
+          status?: string
+        }
+        Update: {
+          created_at?: string
+          full_name?: string
+          id?: string
+          last_seen?: string | null
+          status?: string
+        }
+        Relationships: []
+      }
+      user_roles: {
+        Row: {
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
+      vitals: {
+        Row: {
+          created_at: string
+          ecg_data: Json | null
+          heart_rate: number | null
+          id: string
+          motion_status: string | null
+          patient_id: string
+          spo2: number | null
+          temperature: number | null
+        }
+        Insert: {
+          created_at?: string
+          ecg_data?: Json | null
+          heart_rate?: number | null
+          id?: string
+          motion_status?: string | null
+          patient_id: string
+          spo2?: number | null
+          temperature?: number | null
+        }
+        Update: {
+          created_at?: string
+          ecg_data?: Json | null
+          heart_rate?: number | null
+          id?: string
+          motion_status?: string | null
+          patient_id?: string
+          spo2?: number | null
+          temperature?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "vitals_patient_id_fkey"
+            columns: ["patient_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      get_user_role: {
+        Args: { _user_id: string }
+        Returns: Database["public"]["Enums"]["app_role"]
+      }
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
+      insert_audit_log: {
+        Args: { _action: string; _details?: Json; _user_id: string }
+        Returns: undefined
+      }
+      update_last_seen: { Args: { _user_id: string }; Returns: undefined }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin" | "patient"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +271,8 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin", "patient"],
+    },
   },
 } as const

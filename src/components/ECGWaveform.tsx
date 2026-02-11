@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { generateECGData } from '@/lib/mockData';
+import { generateECGData } from '@/services/vitalsService';
 import { LineChart, Line, YAxis, ResponsiveContainer } from 'recharts';
 import { Activity } from 'lucide-react';
 

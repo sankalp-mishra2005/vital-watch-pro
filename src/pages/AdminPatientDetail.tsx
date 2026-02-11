@@ -1,6 +1,9 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { generateVitals, generateHistoricalData, classifyStatus, type VitalSigns } from '@/lib/mockData';
+import {
+  generateVitals, generateHistoricalData, classifyStatus,
+  subscribeToVitals, type VitalSigns,
+} from '@/services/vitalsService';
 import VitalCard from '@/components/VitalCard';
 import ECGWaveform from '@/components/ECGWaveform';
 import VitalTrendChart from '@/components/VitalTrendChart';
@@ -8,6 +11,7 @@ import StatusBadge from '@/components/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Heart, Droplets, Thermometer, Move, ArrowLeft } from 'lucide-react';
 
+// HARDWARE SWAP: Replace this map with a Supabase query on the profiles table
 const PATIENT_MAP: Record<string, { name: string; age: number; room: string }> = {
   'P-001': { name: 'Rajesh Kumar', age: 58, room: '101' },
   'P-002': { name: 'Priya Sharma', age: 34, room: '102' },
@@ -26,12 +30,12 @@ export default function AdminPatientDetail() {
   const [vitals, setVitals] = useState<VitalSigns>(generateVitals());
   const [historicalData] = useState(() => generateHistoricalData(24));
 
-  const refresh = useCallback(() => setVitals(generateVitals(true)), []);
-
   useEffect(() => {
-    const interval = setInterval(refresh, 3000);
-    return () => clearInterval(interval);
-  }, [refresh]);
+    const unsubscribe = subscribeToVitals(id || '', (newVitals) => {
+      setVitals(newVitals);
+    });
+    return unsubscribe;
+  }, [id]);
 
   if (!patient) {
     return (
