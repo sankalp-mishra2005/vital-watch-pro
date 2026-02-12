@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { supabase } from '@/integrations/supabase/client';
 import {
   generateVitals, generateHistoricalData, classifyStatus,
   subscribeToVitals, type VitalSigns,
@@ -9,33 +10,54 @@ import ECGWaveform from '@/components/ECGWaveform';
 import VitalTrendChart from '@/components/VitalTrendChart';
 import StatusBadge from '@/components/StatusBadge';
 import { Button } from '@/components/ui/button';
-import { Heart, Droplets, Thermometer, Move, ArrowLeft } from 'lucide-react';
+import { Heart, Droplets, Thermometer, Move, ArrowLeft, Loader2 } from 'lucide-react';
 
-// HARDWARE SWAP: Replace this map with a Supabase query on the profiles table
-const PATIENT_MAP: Record<string, { name: string; age: number; room: string }> = {
-  'P-001': { name: 'Rajesh Kumar', age: 58, room: '101' },
-  'P-002': { name: 'Priya Sharma', age: 34, room: '102' },
-  'P-003': { name: 'Arun Patel', age: 72, room: '103' },
-  'P-004': { name: 'Meena Devi', age: 45, room: '104' },
-  'P-005': { name: 'Vikram Singh', age: 63, room: '105' },
-  'P-006': { name: 'Lakshmi Iyer', age: 51, room: '106' },
-  'P-007': { name: 'Suresh Reddy', age: 67, room: '107' },
-  'P-008': { name: 'Ananya Das', age: 29, room: '108' },
-};
+interface PatientProfile {
+  id: string;
+  full_name: string;
+  status: string;
+  created_at: string;
+  last_seen: string | null;
+  phone_number: string | null;
+}
 
 export default function AdminPatientDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const patient = id ? PATIENT_MAP[id] : null;
+  const [patient, setPatient] = useState<PatientProfile | null>(null);
+  const [loading, setLoading] = useState(true);
   const [vitals, setVitals] = useState<VitalSigns>(generateVitals());
   const [historicalData] = useState(() => generateHistoricalData(24));
 
+  // Fetch patient profile from DB
+  useEffect(() => {
+    if (!id) return;
+    (async () => {
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, full_name, status, created_at, last_seen, phone_number')
+        .eq('id', id)
+        .single();
+      if (data) setPatient(data as PatientProfile);
+      setLoading(false);
+    })();
+  }, [id]);
+
+  // Subscribe to mock vitals (will switch to real when hardware connected)
   useEffect(() => {
     const unsubscribe = subscribeToVitals(id || '', (newVitals) => {
       setVitals(newVitals);
     });
     return unsubscribe;
   }, [id]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   if (!patient) {
     return (
@@ -54,8 +76,11 @@ export default function AdminPatientDetail() {
           <ArrowLeft className="w-5 h-5" />
         </Button>
         <div className="flex-1">
-          <h1 className="text-xl font-bold">{patient.name}</h1>
-          <p className="text-xs text-muted-foreground">ID: {id} · Room {patient.room} · Age {patient.age}</p>
+          <h1 className="text-xl font-bold">{patient.full_name || 'Unnamed'}</h1>
+          <p className="text-xs text-muted-foreground">
+            Registered: {new Date(patient.created_at).toLocaleDateString()}
+            {patient.phone_number && ` · Phone: ${patient.phone_number}`}
+          </p>
         </div>
         <StatusBadge status={status} />
       </header>

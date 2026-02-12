@@ -10,6 +10,7 @@ import { Heart, Loader2, CheckCircle } from 'lucide-react';
 export default function Signup() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
@@ -31,7 +32,7 @@ export default function Signup() {
     }
 
     setIsLoading(true);
-    const result = await signup(email, password, fullName);
+    const result = await signup(email, password, fullName, phoneNumber);
     setIsLoading(false);
 
     if (result.error) {
@@ -102,6 +103,18 @@ export default function Signup() {
                   placeholder="you@example.com"
                   className="bg-muted/50"
                   required
+                  disabled={isLoading}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="phoneNumber">Phone Number (optional)</Label>
+                <Input
+                  id="phoneNumber"
+                  type="tel"
+                  value={phoneNumber}
+                  onChange={e => setPhoneNumber(e.target.value)}
+                  placeholder="+1234567890"
+                  className="bg-muted/50"
                   disabled={isLoading}
                 />
               </div>

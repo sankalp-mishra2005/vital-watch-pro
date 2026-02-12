@@ -1,15 +1,15 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import {
   generateVitals, generateHistoricalData, classifyStatus,
   subscribeToVitals,
-  type VitalSigns, type VitalAlert,
+  type VitalSigns,
 } from '@/services/vitalsService';
 import VitalCard from '@/components/VitalCard';
 import ECGWaveform from '@/components/ECGWaveform';
 import VitalTrendChart from '@/components/VitalTrendChart';
-import AlertPanel from '@/components/AlertPanel';
+import AlertPanel, { type VitalAlert } from '@/components/AlertPanel';
 import StatusBadge from '@/components/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Heart, Droplets, Thermometer, Move, LogOut, Activity } from 'lucide-react';
