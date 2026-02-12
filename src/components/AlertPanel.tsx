@@ -1,10 +1,20 @@
-import { VitalAlert as Alert } from '@/services/vitalsService';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Bell, AlertTriangle, AlertOctagon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { VitalStatus } from '@/services/vitalsService';
+
+export interface VitalAlert {
+  id: string;
+  patientId: string;
+  patientName: string;
+  type: string;
+  message: string;
+  level: VitalStatus;
+  timestamp: Date;
+}
 
 interface Props {
-  alerts: Alert[];
+  alerts: VitalAlert[];
 }
 
 export default function AlertPanel({ alerts }: Props) {

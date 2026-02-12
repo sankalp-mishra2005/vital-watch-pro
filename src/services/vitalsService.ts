@@ -1,11 +1,11 @@
 /**
  * VitalSync — Vitals Service Abstraction Layer
- * 
+ *
  * This service abstracts all vitals data access. Currently returns mock data.
- * 
+ *
  * === HARDWARE INTEGRATION POINT ===
  * When ESP32 + sensors (MPU6050, MAX30100, AD8232, MLX90614) are connected:
- * 1. Replace getMockVitals() with a Supabase SELECT from the `vitals` table
+ * 1. Replace generateVitals() with a Supabase SELECT from the `vitals` table
  * 2. Replace subscribeToVitals() with a Supabase Realtime subscription
  * 3. The ESP32 will POST data via an Edge Function that INSERTs into `vitals`
  * 4. No dashboard component changes needed — only this file changes
@@ -25,31 +25,10 @@ export interface VitalSigns {
   timestamp: Date;
 }
 
-export interface PatientWithVitals {
-  id: string;
-  name: string;
-  age: number;
-  gender: 'M' | 'F';
-  room: string;
-  admittedDate: string;
-  vitals: VitalSigns;
-  status: VitalStatus;
-}
-
-export interface VitalAlert {
-  id: string;
-  patientId: string;
-  patientName: string;
-  type: string;
-  message: string;
-  level: VitalStatus;
-  timestamp: Date;
-}
-
 // ──────────────────────────────────────────────
 // Thresholds (shared between mock and future real data)
 // ──────────────────────────────────────────────
-const THRESHOLDS = {
+export const THRESHOLDS = {
   heartRate: { low: 60, high: 100, criticalLow: 50, criticalHigh: 120 },
   spo2: { low: 95, criticalLow: 90 },
   temperature: { low: 36.1, high: 37.5, criticalHigh: 38.5 },
@@ -134,67 +113,6 @@ export function generateHistoricalData(hours = 24) {
     });
   }
   return data;
-}
-
-// ──────────────────────────────────────────────
-// Mock Patient List (for Admin dashboard)
-// HARDWARE SWAP: Replace with Supabase query joining profiles + latest vitals
-// ──────────────────────────────────────────────
-const PATIENT_NAMES = [
-  { name: 'Rajesh Kumar', age: 58, gender: 'M' as const },
-  { name: 'Priya Sharma', age: 34, gender: 'F' as const },
-  { name: 'Arun Patel', age: 72, gender: 'M' as const },
-  { name: 'Meena Devi', age: 45, gender: 'F' as const },
-  { name: 'Vikram Singh', age: 63, gender: 'M' as const },
-  { name: 'Lakshmi Iyer', age: 51, gender: 'F' as const },
-  { name: 'Suresh Reddy', age: 67, gender: 'M' as const },
-  { name: 'Ananya Das', age: 29, gender: 'F' as const },
-];
-
-export function generatePatients(): PatientWithVitals[] {
-  return PATIENT_NAMES.map((p, i) => {
-    const vitals = generateVitals(i % 3 === 0);
-    return {
-      id: `P-${String(i + 1).padStart(3, '0')}`,
-      name: p.name,
-      age: p.age,
-      gender: p.gender,
-      room: `${100 + i + 1}`,
-      admittedDate: new Date(Date.now() - (Math.random() * 7 + 1) * 86400000).toISOString().split('T')[0],
-      vitals,
-      status: classifyStatus(vitals),
-    };
-  });
-}
-
-export function generateAlerts(patients: PatientWithVitals[]): VitalAlert[] {
-  const alerts: VitalAlert[] = [];
-  patients.forEach(p => {
-    if (p.status === 'critical') {
-      alerts.push({
-        id: `A-${Math.random().toString(36).slice(2, 8)}`,
-        patientId: p.id,
-        patientName: p.name,
-        type: 'CRITICAL',
-        message: p.vitals.motionStatus === 'fall_detected'
-          ? `Fall detected for ${p.name} in Room ${p.room}`
-          : `Critical vitals detected for ${p.name} — HR: ${p.vitals.heartRate}, SpO₂: ${p.vitals.spo2}%`,
-        level: 'critical',
-        timestamp: new Date(Date.now() - Math.random() * 600000),
-      });
-    } else if (p.status === 'warning') {
-      alerts.push({
-        id: `A-${Math.random().toString(36).slice(2, 8)}`,
-        patientId: p.id,
-        patientName: p.name,
-        type: 'WARNING',
-        message: `Abnormal vitals for ${p.name} — HR: ${p.vitals.heartRate}, SpO₂: ${p.vitals.spo2}%`,
-        level: 'warning',
-        timestamp: new Date(Date.now() - Math.random() * 1200000),
-      });
-    }
-  });
-  return alerts.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 }
 
 // ──────────────────────────────────────────────

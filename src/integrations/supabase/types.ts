@@ -14,6 +14,41 @@ export type Database = {
   }
   public: {
     Tables: {
+      alerts: {
+        Row: {
+          created_at: string
+          id: string
+          level: string
+          message: string
+          patient_id: string
+          resolved: boolean
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          level?: string
+          message: string
+          patient_id: string
+          resolved?: boolean
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          level?: string
+          message?: string
+          patient_id?: string
+          resolved?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "alerts_patient_id_fkey"
+            columns: ["patient_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       audit_logs: {
         Row: {
           action: string
@@ -44,6 +79,7 @@ export type Database = {
           full_name: string
           id: string
           last_seen: string | null
+          phone_number: string | null
           status: string
         }
         Insert: {
@@ -51,6 +87,7 @@ export type Database = {
           full_name?: string
           id: string
           last_seen?: string | null
+          phone_number?: string | null
           status?: string
         }
         Update: {
@@ -58,6 +95,7 @@ export type Database = {
           full_name?: string
           id?: string
           last_seen?: string | null
+          phone_number?: string | null
           status?: string
         }
         Relationships: []

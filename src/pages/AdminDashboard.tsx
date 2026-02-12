@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import {
-  generatePatients, generateAlerts,
-  type PatientWithVitals, type VitalAlert,
+  generateVitals, classifyStatus,
+  type VitalSigns, type VitalStatus,
 } from '@/services/vitalsService';
 import StatusBadge from '@/components/StatusBadge';
 import AlertPanel from '@/components/AlertPanel';
@@ -12,10 +12,24 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Activity, LogOut, Search, Users, AlertTriangle, HeartPulse, CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
+import { Activity, LogOut, Search, Users, AlertTriangle, HeartPulse, CheckCircle, XCircle, Clock, Loader2, Bell } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
+
+interface DBPatient {
+  id: string;
+  full_name: string;
+  status: string;
+  created_at: string;
+  last_seen: string | null;
+  phone_number: string | null;
+}
+
+interface PatientWithMockVitals extends DBPatient {
+  vitals: VitalSigns;
+  vitalStatus: VitalStatus;
+}
 
 interface PendingUser {
   id: string;
@@ -23,6 +37,7 @@ interface PendingUser {
   status: string;
   created_at: string;
   last_seen: string | null;
+  role: string;
 }
 
 interface AuditLog {
@@ -33,41 +48,109 @@ interface AuditLog {
   user_id: string | null;
 }
 
+interface DBAlert {
+  id: string;
+  patient_id: string;
+  message: string;
+  level: string;
+  resolved: boolean;
+  created_at: string;
+}
+
 export default function AdminDashboard() {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  // Mock vitals patients
-  const [patients, setPatients] = useState<PatientWithVitals[]>(() => generatePatients());
-  const [alerts, setAlerts] = useState<VitalAlert[]>([]);
+  // Real DB patients with mock vitals attached
+  const [patients, setPatients] = useState<PatientWithMockVitals[]>([]);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [patientsLoading, setPatientsLoading] = useState(true);
 
-  // Real DB data
+  // Real DB alerts
+  const [dbAlerts, setDbAlerts] = useState<DBAlert[]>([]);
+
+  // Approvals tab data
   const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'vitals' | 'approvals' | 'audit'>('vitals');
+  const [activeTab, setActiveTab] = useState<'vitals' | 'approvals' | 'alerts' | 'audit'>('vitals');
 
-  // Refresh mock vitals
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const updated = generatePatients();
-      setPatients(updated);
-      setAlerts(generateAlerts(updated));
-    }, 5000);
-    setAlerts(generateAlerts(patients));
-    return () => clearInterval(interval);
+  // Fetch approved patients from DB and attach mock vitals
+  const fetchPatients = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, status, created_at, last_seen, phone_number, user_roles!inner(role)')
+      .eq('user_roles.role', 'patient')
+      .eq('status', 'approved')
+      .order('created_at', { ascending: false });
+
+    if (data && !error) {
+      const withVitals: PatientWithMockVitals[] = (data as any[]).map(p => {
+        const vitals = generateVitals(Math.random() < 0.3);
+        return {
+          id: p.id,
+          full_name: p.full_name,
+          status: p.status,
+          created_at: p.created_at,
+          last_seen: p.last_seen,
+          phone_number: p.phone_number,
+          vitals,
+          vitalStatus: classifyStatus(vitals),
+        };
+      });
+      setPatients(withVitals);
+    }
+    setPatientsLoading(false);
   }, []);
 
-  // Fetch pending users from DB
+  // Refresh mock vitals every 5s while keeping real patient identities
+  useEffect(() => {
+    fetchPatients();
+    const interval = setInterval(() => {
+      setPatients(prev =>
+        prev.map(p => {
+          const vitals = generateVitals(Math.random() < 0.3);
+          return { ...p, vitals, vitalStatus: classifyStatus(vitals) };
+        })
+      );
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [fetchPatients]);
+
+  // Fetch only patient-role users for approvals (never admins)
   const fetchPendingUsers = useCallback(async () => {
     const { data } = await supabase
       .from('profiles')
-      .select('id, full_name, status, created_at, last_seen')
+      .select('id, full_name, status, created_at, last_seen, user_roles!inner(role)')
+      .eq('user_roles.role', 'patient')
       .order('created_at', { ascending: false });
-    if (data) setPendingUsers(data);
+
+    if (data) {
+      const mapped: PendingUser[] = (data as any[]).map(u => ({
+        id: u.id,
+        full_name: u.full_name,
+        status: u.status,
+        created_at: u.created_at,
+        last_seen: u.last_seen,
+        role: (u.user_roles as any[])?.[0]?.role || 'patient',
+      }));
+      // Deduplicate by ID
+      const unique = Array.from(new Map(mapped.map(u => [u.id, u])).values());
+      setPendingUsers(unique);
+    }
+  }, []);
+
+  // Fetch DB alerts
+  const fetchAlerts = useCallback(async () => {
+    const { data } = await supabase
+      .from('alerts')
+      .select('*')
+      .eq('resolved', false)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (data) setDbAlerts(data as DBAlert[]);
   }, []);
 
   // Fetch audit logs
@@ -82,10 +165,26 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     fetchPendingUsers();
+    fetchAlerts();
     fetchAuditLogs();
-  }, [fetchPendingUsers, fetchAuditLogs]);
+  }, [fetchPendingUsers, fetchAlerts, fetchAuditLogs]);
 
-  // Approve / suspend user
+  // Realtime alerts subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('admin-alerts')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'alerts',
+      }, () => {
+        fetchAlerts();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [fetchAlerts]);
+
+  // Approve / suspend user (only patients, enforced by RLS)
   const updateUserStatus = async (userId: string, newStatus: 'approved' | 'suspended') => {
     setActionLoading(userId);
     const { error } = await supabase
@@ -102,23 +201,31 @@ export default function AdminDashboard() {
       toast({ title: `User ${newStatus}`, description: `Account has been ${newStatus}.` });
       fetchPendingUsers();
       fetchAuditLogs();
+    } else {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
     }
     setActionLoading(null);
   };
 
+  // Resolve alert
+  const resolveAlert = async (alertId: string) => {
+    await supabase.from('alerts').update({ resolved: true }).eq('id', alertId);
+    fetchAlerts();
+  };
+
   const filtered = useMemo(() => {
     return patients.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase()) || p.id.includes(search);
-      const matchesStatus = filterStatus === 'all' || p.status === filterStatus;
+      const matchesSearch = p.full_name.toLowerCase().includes(search.toLowerCase()) || p.id.includes(search);
+      const matchesStatus = filterStatus === 'all' || p.vitalStatus === filterStatus;
       return matchesSearch && matchesStatus;
     });
   }, [patients, search, filterStatus]);
 
   const stats = useMemo(() => ({
     total: patients.length,
-    normal: patients.filter(p => p.status === 'normal').length,
-    warning: patients.filter(p => p.status === 'warning').length,
-    critical: patients.filter(p => p.status === 'critical').length,
+    normal: patients.filter(p => p.vitalStatus === 'normal').length,
+    warning: patients.filter(p => p.vitalStatus === 'warning').length,
+    critical: patients.filter(p => p.vitalStatus === 'critical').length,
   }), [patients]);
 
   const handleLogout = async () => {
@@ -151,7 +258,7 @@ export default function AdminDashboard() {
             <Users className="w-8 h-8 text-muted-foreground" />
             <div>
               <p className="text-2xl font-mono font-bold">{stats.total}</p>
-              <p className="text-xs text-muted-foreground">Total Patients</p>
+              <p className="text-xs text-muted-foreground">Approved Patients</p>
             </div>
           </CardContent>
         </Card>
@@ -186,7 +293,7 @@ export default function AdminDashboard() {
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-border/50 pb-2">
-        {(['vitals', 'approvals', 'audit'] as const).map(tab => (
+        {(['vitals', 'approvals', 'alerts', 'audit'] as const).map(tab => (
           <Button
             key={tab}
             variant={activeTab === tab ? 'default' : 'ghost'}
@@ -195,10 +302,16 @@ export default function AdminDashboard() {
             className="capitalize"
           >
             {tab === 'approvals' && <Clock className="w-4 h-4 mr-1" />}
+            {tab === 'alerts' && <Bell className="w-4 h-4 mr-1" />}
             {tab}
             {tab === 'approvals' && pendingUsers.filter(u => u.status === 'pending').length > 0 && (
               <Badge variant="destructive" className="ml-1 text-xs px-1.5">
                 {pendingUsers.filter(u => u.status === 'pending').length}
+              </Badge>
+            )}
+            {tab === 'alerts' && dbAlerts.length > 0 && (
+              <Badge variant="destructive" className="ml-1 text-xs px-1.5">
+                {dbAlerts.length}
               </Badge>
             )}
           </Button>
@@ -207,80 +320,89 @@ export default function AdminDashboard() {
 
       {/* Vitals Tab */}
       {activeTab === 'vitals' && (
-        <div className="grid lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-4">
-            <div className="flex gap-3">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search patients..."
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                  className="pl-9 bg-muted/50"
-                />
-              </div>
-              <Select value={filterStatus} onValueChange={setFilterStatus}>
-                <SelectTrigger className="w-36 bg-muted/50">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="normal">Normal</SelectItem>
-                  <SelectItem value="warning">Warning</SelectItem>
-                  <SelectItem value="critical">Critical</SelectItem>
-                </SelectContent>
-              </Select>
+        <div className="space-y-4">
+          <div className="flex gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search patients..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="pl-9 bg-muted/50"
+              />
             </div>
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger className="w-36 bg-muted/50">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="normal">Normal</SelectItem>
+                <SelectItem value="warning">Warning</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {patientsLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : patients.length === 0 ? (
+            <Card className="border-border/50">
+              <CardContent className="p-8 text-center">
+                <Users className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+                <p className="text-sm text-muted-foreground">No approved patients yet. Approve patients in the Approvals tab.</p>
+              </CardContent>
+            </Card>
+          ) : (
             <Card className="border-border/50">
               <CardContent className="p-0">
                 <Table>
                   <TableHeader>
                     <TableRow className="border-border/50 hover:bg-transparent">
-                      <TableHead>ID</TableHead>
                       <TableHead>Patient</TableHead>
-                      <TableHead>Room</TableHead>
                       <TableHead>HR</TableHead>
                       <TableHead>SpO₂</TableHead>
                       <TableHead>Temp</TableHead>
+                      <TableHead>Motion</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>Last Seen</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filtered.map(patient => (
                       <TableRow key={patient.id} className="cursor-pointer border-border/30 hover:bg-muted/30"
                         onClick={() => navigate(`/admin/patient/${patient.id}`)}>
-                        <TableCell className="font-mono text-xs">{patient.id}</TableCell>
                         <TableCell>
-                          <div>
-                            <p className="font-medium text-sm">{patient.name}</p>
-                            <p className="text-xs text-muted-foreground">{patient.age}{patient.gender === 'M' ? 'M' : 'F'}</p>
-                          </div>
+                          <p className="font-medium text-sm">{patient.full_name || 'Unnamed'}</p>
                         </TableCell>
-                        <TableCell className="font-mono text-sm">{patient.room}</TableCell>
                         <TableCell className="font-mono text-sm">{patient.vitals.heartRate}</TableCell>
                         <TableCell className="font-mono text-sm">{patient.vitals.spo2}%</TableCell>
                         <TableCell className="font-mono text-sm">{patient.vitals.temperature}°C</TableCell>
-                        <TableCell><StatusBadge status={patient.status} /></TableCell>
+                        <TableCell className="text-xs capitalize">{patient.vitals.motionStatus.replace('_', ' ')}</TableCell>
+                        <TableCell><StatusBadge status={patient.vitalStatus} /></TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {patient.last_seen ? new Date(patient.last_seen).toLocaleString() : 'Never'}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
               </CardContent>
             </Card>
-          </div>
-          <AlertPanel alerts={alerts} />
+          )}
         </div>
       )}
 
-      {/* Approvals Tab */}
+      {/* Approvals Tab — only patient-role users */}
       {activeTab === 'approvals' && (
         <Card className="border-border/50">
           <CardHeader>
-            <CardTitle className="text-sm">User Account Management</CardTitle>
+            <CardTitle className="text-sm">Patient Account Management</CardTitle>
           </CardHeader>
           <CardContent>
             {pendingUsers.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No registered users found.</p>
+              <p className="text-sm text-muted-foreground">No patient accounts found.</p>
             ) : (
               <Table>
                 <TableHeader>
@@ -331,6 +453,42 @@ export default function AdminDashboard() {
                   ))}
                 </TableBody>
               </Table>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Alerts Tab */}
+      {activeTab === 'alerts' && (
+        <Card className="border-border/50">
+          <CardHeader>
+            <CardTitle className="text-sm">Active Alerts</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {dbAlerts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No active alerts.</p>
+            ) : (
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {dbAlerts.map(alert => (
+                  <div
+                    key={alert.id}
+                    className={`flex items-start gap-3 p-3 rounded-lg border ${
+                      alert.level === 'critical' ? 'border-critical/30 bg-critical/5' : 'border-warning/30 bg-warning/5'
+                    }`}
+                  >
+                    <AlertTriangle className={`w-4 h-4 mt-0.5 shrink-0 ${alert.level === 'critical' ? 'text-critical' : 'text-warning'}`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium">{alert.message}</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {new Date(alert.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={() => resolveAlert(alert.id)} className="text-xs">
+                      Resolve
+                    </Button>
+                  </div>
+                ))}
+              </div>
             )}
           </CardContent>
         </Card>
