@@ -20,6 +20,8 @@ export type Database = {
           id: string
           level: string
           message: string
+          notified_email: boolean
+          notified_sms: boolean
           patient_id: string
           resolved: boolean
         }
@@ -28,6 +30,8 @@ export type Database = {
           id?: string
           level?: string
           message: string
+          notified_email?: boolean
+          notified_sms?: boolean
           patient_id: string
           resolved?: boolean
         }
@@ -36,6 +40,8 @@ export type Database = {
           id?: string
           level?: string
           message?: string
+          notified_email?: boolean
+          notified_sms?: boolean
           patient_id?: string
           resolved?: boolean
         }
