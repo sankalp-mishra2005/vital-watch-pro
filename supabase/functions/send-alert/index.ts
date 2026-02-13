@@ -32,7 +32,7 @@ async function sendResendEmail(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "VitalSync Alerts <alerts@vitalsync.dev>",
+        from: "VitalSync Alerts <onboarding@resend.dev>",
         to: [to],
         subject,
         html,
@@ -47,36 +47,6 @@ async function sendResendEmail(
     return true;
   } catch (err) {
     console.error("Resend send failed:", err);
-    return false;
-  }
-}
-
-async function sendTwilioSms(
-  to: string,
-  body: string,
-  accountSid: string,
-  authToken: string,
-  fromNumber: string
-): Promise<boolean> {
-  try {
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
-      },
-      body: new URLSearchParams({ To: to, From: fromNumber, Body: body }),
-    });
-    if (!res.ok) {
-      const resBody = await res.text();
-      console.error(`Twilio API error [${res.status}]: ${resBody}`);
-      return false;
-    }
-    await res.json();
-    return true;
-  } catch (err) {
-    console.error("Twilio send failed:", err);
     return false;
   }
 }
@@ -116,6 +86,7 @@ function buildEmailHtml(
           </table>
         ` : ""}
         <p style="margin: 0; color: #6b7280; font-size: 14px;">Time: ${timestamp} UTC</p>
+        <p style="margin: 16px 0 0; color: #9ca3af; font-size: 12px;">SMS notifications available on paid plan.</p>
       </div>
     </div>
   `;
@@ -155,15 +126,13 @@ Deno.serve(async (req) => {
     // 2. Fetch patient profile
     const { data: patient } = await supabase
       .from("profiles")
-      .select("full_name, phone_number")
+      .select("full_name")
       .eq("id", patient_id)
       .single();
 
     const patientName = patient?.full_name || "Unknown Patient";
-    const phoneNumber = patient?.phone_number;
 
     let emailSent = false;
-    let smsSent = false;
 
     // 3. Send email to all admins via Resend
     const resendApiKey = Deno.env.get("RESEND_API_KEY");
@@ -200,32 +169,12 @@ Deno.serve(async (req) => {
       console.warn("RESEND_API_KEY not configured — skipping email notifications");
     }
 
-    // 4. Send SMS via Twilio (critical alerts only)
-    const twilioSid = Deno.env.get("TWILIO_ACCOUNT_SID");
-    const twilioToken = Deno.env.get("TWILIO_AUTH_TOKEN");
-    const twilioPhone = Deno.env.get("TWILIO_PHONE_NUMBER");
+    // SMS is a future paid feature — not implemented in free tier
 
-    if (twilioSid && twilioToken && twilioPhone && phoneNumber && level === "critical") {
-      const smsBody = `[VitalSync CRITICAL] ${patientName}: ${message}`;
-      smsSent = await sendTwilioSms(phoneNumber, smsBody, twilioSid, twilioToken, twilioPhone);
-
-      await supabase.rpc("insert_audit_log", {
-        _user_id: patient_id,
-        _action: "alert_sms_critical",
-        _details: {
-          phone_number: phoneNumber,
-          patient_name: patientName,
-          sms_sent: smsSent,
-        },
-      });
-    } else if (level === "critical" && !twilioSid) {
-      console.warn("Twilio credentials not configured — skipping SMS");
-    }
-
-    // 5. Update alert with notification status
+    // 4. Update alert with notification status
     await supabase
       .from("alerts")
-      .update({ notified_email: emailSent, notified_sms: smsSent })
+      .update({ notified_email: emailSent, notified_sms: false })
       .eq("id", alert.id);
 
     return new Response(
@@ -233,7 +182,8 @@ Deno.serve(async (req) => {
         success: true,
         alert_id: alert.id,
         email_sent: emailSent,
-        sms_sent: smsSent,
+        sms_sent: false,
+        sms_note: "SMS notifications available on paid plan",
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
