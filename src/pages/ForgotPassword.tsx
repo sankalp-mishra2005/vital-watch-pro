@@ -9,22 +9,27 @@ import { Heart, Loader2, Mail } from 'lucide-react';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sent, setSent] = useState(false);
-  const { resetPassword } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    setIsLoading(true);
-    const result = await resetPassword(email);
-    setIsLoading(false);
-    if (result.error) {
-      setError(result.error);
-    } else {
-      setSent(true);
+    if (newPassword.length < 6) {
+      setError('Password must be at least 6 characters');
+      return;
     }
+    setIsLoading(true);
+    try {
+      const { default: api } = await import('@/lib/api');
+      await api.auth.resetPassword(email, newPassword);
+      setSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reset failed');
+    }
+    setIsLoading(false);
   };
 
   if (sent) {
@@ -34,9 +39,9 @@ export default function ForgotPassword() {
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 glow-green mx-auto">
             <Mail className="w-8 h-8 text-primary" />
           </div>
-          <h2 className="text-xl font-bold">Check Your Email</h2>
+          <h2 className="text-xl font-bold">Password Updated</h2>
           <p className="text-sm text-muted-foreground">
-            If an account exists for {email}, we've sent password reset instructions.
+            Your password has been reset. You can now log in with your new password.
           </p>
           <Link to="/login">
             <Button variant="outline" className="mt-2">Back to Login</Button>
@@ -75,10 +80,23 @@ export default function ForgotPassword() {
                   disabled={isLoading}
                 />
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="newPassword">New Password</Label>
+                <Input
+                  id="newPassword"
+                  type="password"
+                  value={newPassword}
+                  onChange={e => setNewPassword(e.target.value)}
+                  placeholder="Min 6 characters"
+                  className="bg-muted/50"
+                  required
+                  disabled={isLoading}
+                />
+              </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                Send Reset Link
+                Reset Password
               </Button>
             </form>
             <div className="mt-4 text-center">

@@ -1,9 +1,9 @@
--- VitalSync Database Schema
--- Run: psql -d vitalsync -f schema.sql
+-- VitalSync Database Schema (Production)
+-- Run: psql -d vitalsync -f config/schema.sql
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- Users table (replaces Supabase auth.users + profiles + user_roles)
+-- ─── Users ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   full_name TEXT NOT NULL DEFAULT '',
@@ -16,10 +16,44 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Vitals table
+-- ─── Devices (IoT) ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS devices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_name TEXT NOT NULL DEFAULT 'ESP32-Sensor',
+  api_key TEXT UNIQUE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  last_seen TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_devices_patient ON devices(patient_id);
+CREATE INDEX idx_devices_api_key ON devices(api_key);
+
+-- ─── Alert Thresholds (configurable) ────────────────
+CREATE TABLE IF NOT EXISTS alert_thresholds (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  metric TEXT UNIQUE NOT NULL,
+  warning_low DOUBLE PRECISION,
+  warning_high DOUBLE PRECISION,
+  critical_low DOUBLE PRECISION,
+  critical_high DOUBLE PRECISION,
+  updated_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Seed defaults
+INSERT INTO alert_thresholds (metric, warning_low, warning_high, critical_low, critical_high) VALUES
+  ('heart_rate', 60, 100, 50, 120),
+  ('spo2', 95, NULL, 90, NULL),
+  ('temperature', NULL, 37.5, NULL, 38.5)
+ON CONFLICT (metric) DO NOTHING;
+
+-- ─── Vitals ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS vitals (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   patient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id UUID REFERENCES devices(id) ON DELETE SET NULL,
   heart_rate DOUBLE PRECISION,
   spo2 DOUBLE PRECISION,
   temperature DOUBLE PRECISION,
@@ -30,8 +64,9 @@ CREATE TABLE IF NOT EXISTS vitals (
 
 CREATE INDEX idx_vitals_patient ON vitals(patient_id);
 CREATE INDEX idx_vitals_created ON vitals(created_at DESC);
+CREATE INDEX idx_vitals_patient_created ON vitals(patient_id, created_at DESC);
 
--- Alerts table
+-- ─── Alerts ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS alerts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   patient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -39,12 +74,28 @@ CREATE TABLE IF NOT EXISTS alerts (
   level TEXT NOT NULL DEFAULT 'warning' CHECK (level IN ('warning', 'critical')),
   notified_email BOOLEAN NOT NULL DEFAULT false,
   resolved BOOLEAN NOT NULL DEFAULT false,
+  resolved_by UUID REFERENCES users(id),
+  resolved_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_alerts_patient ON alerts(patient_id);
+CREATE INDEX idx_alerts_created ON alerts(created_at DESC);
+CREATE INDEX idx_alerts_unresolved ON alerts(resolved) WHERE resolved = false;
 
--- Audit logs table
+-- ─── Refresh Tokens ─────────────────────────────────
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token TEXT UNIQUE NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token);
+
+-- ─── Audit Logs ─────────────────────────────────────
 CREATE TABLE IF NOT EXISTS audit_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -54,8 +105,3 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX idx_audit_user ON audit_logs(user_id);
-
--- Seed admin account (password: admin123 — change in production!)
--- Hash generated with bcrypt rounds=10
--- INSERT INTO users (full_name, email, password_hash, role, status)
--- VALUES ('Admin', 'admin@vitalsync.app', '$2b$10$...', 'admin', 'approved');

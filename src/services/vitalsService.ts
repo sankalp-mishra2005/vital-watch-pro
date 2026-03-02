@@ -1,18 +1,13 @@
 /**
  * VitalSync — Vitals Service Abstraction Layer
  *
- * This service abstracts all vitals data access. Currently returns mock data.
- *
- * === HARDWARE INTEGRATION POINT ===
- * When ESP32 + sensors (MPU6050, MAX30100, AD8232, MLX90614) are connected:
- * 1. Replace generateVitals() with a Supabase SELECT from the `vitals` table
- * 2. Replace subscribeToVitals() with a Supabase Realtime subscription
- * 3. The ESP32 will POST data via an Edge Function that INSERTs into `vitals`
- * 4. No dashboard component changes needed — only this file changes
- * ===================================
+ * Connected to Node.js backend via REST API + Socket.IO.
+ * When ESP32 hardware is connected, vitals flow through the backend automatically.
+ * For development/demo without hardware, falls back to mock data generation.
  */
 
-import { supabase } from '@/integrations/supabase/client';
+import api from '@/lib/api';
+import { io as socketIO } from 'socket.io-client';
 
 export type VitalStatus = 'normal' | 'warning' | 'critical';
 
@@ -25,9 +20,6 @@ export interface VitalSigns {
   timestamp: Date;
 }
 
-// ──────────────────────────────────────────────
-// Thresholds (shared between mock and future real data)
-// ──────────────────────────────────────────────
 export const THRESHOLDS = {
   heartRate: { low: 60, high: 100, criticalLow: 50, criticalHigh: 120 },
   spo2: { low: 95, criticalLow: 90 },
@@ -50,9 +42,6 @@ export function classifyStatus(vitals: VitalSigns): VitalStatus {
   return 'normal';
 }
 
-// ──────────────────────────────────────────────
-// ECG Simulation (will be replaced by AD8232 data)
-// ──────────────────────────────────────────────
 function generateECGCycle(): number[] {
   const cycle: number[] = [];
   for (let i = 0; i < 8; i++) cycle.push(Math.sin(i / 8 * Math.PI) * 0.15);
@@ -80,12 +69,6 @@ function randomInRange(min: number, max: number) {
   return Math.round((min + Math.random() * (max - min)) * 10) / 10;
 }
 
-// ──────────────────────────────────────────────
-// Mock Vitals Generator
-// HARDWARE SWAP: Replace this function body with:
-//   const { data } = await supabase.from('vitals').select('*')
-//     .eq('patient_id', patientId).order('created_at', { ascending: false }).limit(1);
-// ──────────────────────────────────────────────
 export function generateVitals(biasTowardsAbnormal = false): VitalSigns {
   const abnormal = biasTowardsAbnormal && Math.random() < 0.3;
   return {
@@ -115,41 +98,109 @@ export function generateHistoricalData(hours = 24) {
   return data;
 }
 
-// ──────────────────────────────────────────────
-// Realtime Subscription Placeholder
-// HARDWARE SWAP: Uncomment and use this when hardware sends data
-// ──────────────────────────────────────────────
+export async function fetchVitalsHistory(patientId: string, limit = 24) {
+  try {
+    const data = await api.vitals.getForPatient(patientId, limit);
+    if (data && data.length > 0) {
+      return data.map((v: Record<string, unknown>) => ({
+        time: new Date(v.created_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        heartRate: v.heart_rate as number,
+        spo2: v.spo2 as number,
+        temperature: v.temperature as number,
+      })).reverse();
+    }
+  } catch {
+    // Backend not available
+  }
+  return generateHistoricalData(limit);
+}
+
+export async function fetchLatestVitals(patientId: string): Promise<VitalSigns> {
+  try {
+    const data = await api.vitals.getLatest(patientId);
+    if (data) {
+      return {
+        heartRate: data.heart_rate,
+        spo2: data.spo2,
+        temperature: data.temperature,
+        motionStatus: data.motion_status || 'resting',
+        ecgData: data.ecg_data || generateECGData(200),
+        timestamp: new Date(data.created_at),
+      };
+    }
+  } catch {
+    // Backend not available
+  }
+  return generateVitals();
+}
+
+// Global socket ref for cleanup
+let activeSocket: ReturnType<typeof socketIO> | null = null;
+
 export function subscribeToVitals(
   patientId: string,
   onUpdate: (vitals: VitalSigns) => void
 ) {
-  // === MOCK MODE: Simulate updates every 3 seconds ===
-  const interval = setInterval(() => {
-    onUpdate(generateVitals(true));
+  const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+  const wsUrl = apiUrl.replace('/api', '');
+
+  let interval: ReturnType<typeof setInterval> | null = null;
+  let connected = false;
+
+  function startMockUpdates() {
+    if (!interval) {
+      interval = setInterval(() => {
+        onUpdate(generateVitals(true));
+      }, 3000);
+    }
+  }
+
+  try {
+    const socket = socketIO(wsUrl, {
+      transports: ['websocket', 'polling'],
+      timeout: 3000,
+      reconnectionAttempts: 3,
+    });
+
+    socket.on('connect', () => {
+      connected = true;
+      console.log('[VitalSync] Socket connected');
+      socket.emit('join_patient', patientId);
+    });
+
+    socket.on('vitals_update', (data: Record<string, unknown>) => {
+      if (data.patientId === patientId) {
+        onUpdate({
+          heartRate: data.heartRate as number,
+          spo2: data.spo2 as number,
+          temperature: data.temperature as number,
+          motionStatus: (data.motionStatus as VitalSigns['motionStatus']) || 'resting',
+          ecgData: (data.ecgData as number[]) || generateECGData(200),
+          timestamp: new Date(data.timestamp as string),
+        });
+      }
+    });
+
+    socket.on('connect_error', () => {
+      if (!connected) startMockUpdates();
+    });
+
+    activeSocket = socket;
+  } catch {
+    startMockUpdates();
+  }
+
+  // If no socket connects within 3s, start mock
+  const mockTimeout = setTimeout(() => {
+    if (!connected) startMockUpdates();
   }, 3000);
 
-  return () => clearInterval(interval);
-
-  // === HARDWARE MODE (uncomment when ready): ===
-  // const channel = supabase
-  //   .channel(`vitals-${patientId}`)
-  //   .on('postgres_changes', {
-  //     event: 'INSERT',
-  //     schema: 'public',
-  //     table: 'vitals',
-  //     filter: `patient_id=eq.${patientId}`,
-  //   }, (payload) => {
-  //     const row = payload.new;
-  //     onUpdate({
-  //       heartRate: row.heart_rate,
-  //       spo2: row.spo2,
-  //       temperature: row.temperature,
-  //       motionStatus: row.motion_status,
-  //       ecgData: row.ecg_data || [],
-  //       timestamp: new Date(row.created_at),
-  //     });
-  //   })
-  //   .subscribe();
-  //
-  // return () => { supabase.removeChannel(channel); };
+  return () => {
+    clearTimeout(mockTimeout);
+    if (interval) clearInterval(interval);
+    if (activeSocket) {
+      activeSocket.disconnect();
+      activeSocket = null;
+    }
+  };
 }

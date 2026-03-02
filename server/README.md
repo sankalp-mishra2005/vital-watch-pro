@@ -1,4 +1,6 @@
-# VitalSync — Node.js Backend
+# VitalSync — Node.js Backend v2.0
+
+Production-ready IoT Health Monitoring API.
 
 ## Quick Start
 
@@ -6,61 +8,35 @@
 cd server
 cp .env.example .env   # Edit with your credentials
 npm install
+npm run db:setup       # Requires PostgreSQL running
+npm run dev
 ```
-
-### Database Setup
-
-```bash
-createdb vitalsync
-psql -d vitalsync -f config/schema.sql
-```
-
-### Seed Admin Account
-
-```bash
-node -e "const bcrypt=require('bcrypt'); bcrypt.hash('admin123',10).then(h=>console.log(h))"
-# Copy the hash, then:
-psql -d vitalsync -c "INSERT INTO users (full_name,email,password_hash,role,status) VALUES ('Admin','admin@vitalsync.app','PASTE_HASH_HERE','admin','approved')"
-```
-
-### Run
-
-```bash
-npm run dev    # Development (nodemon)
-npm start      # Production
-```
-
-## API Endpoints
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | /api/auth/register | No | Register patient |
-| POST | /api/auth/login | No | Login → JWT |
-| POST | /api/auth/reset-password | No | Reset password |
-| GET | /api/admin/patients?status=pending | Admin | List patients |
-| PUT | /api/admin/approve/:id | Admin | Approve patient |
-| PUT | /api/admin/suspend/:id | Admin | Suspend patient |
-| GET | /api/admin/alerts | Admin | All alerts |
-| GET | /api/admin/audit-logs | Admin | Audit logs |
-| GET | /api/patient/profile | Patient | Own profile |
-| GET | /api/patient/vitals | Patient | Own vitals |
-| POST | /api/vitals | Auth | ESP32 ingestion |
-| GET | /api/vitals/:patientId | Auth | Vitals history |
-
-## Socket.IO Events
-
-| Event | Direction | Description |
-|-------|-----------|-------------|
-| vitals_update | Server → Client | New vitals reading |
-| critical_alert | Server → Client | Critical threshold alert |
-| join_patient | Client → Server | Subscribe to patient updates |
 
 ## Architecture
 
 ```
-React (Frontend) → REST + WebSocket → Express (Node.js) → PostgreSQL
-                                          ↓
-                                    Socket.IO realtime
-                                          ↓
-                                    Email (Nodemailer)
+ESP32 Sensors ──► POST /api/vitals (X-API-Key auth)
+                         │
+React Frontend ◄── REST + Socket.IO ──► Express.js
+                         │
+                    PostgreSQL
+                         │
+              ┌──────────┼──────────┐
+          Vitals DB   Alert Engine   Email (Nodemailer)
 ```
+
+## Key Features
+
+- **JWT Auth** with refresh token rotation (15m access / 30d refresh)
+- **Device Management** — secure API key per ESP32, revocable
+- **Configurable Thresholds** — admin-adjustable alert levels
+- **Alert Cooldown** — prevents duplicate alert spam (5min per patient)
+- **Rate Limiting** — 100 req/15min API, 60 req/min vitals, 20 req/15min auth
+- **Helmet** security headers
+- **Winston** structured logging
+- **Joi** request validation
+
+## Docs
+
+- [API Documentation](./API_DOCUMENTATION.md)
+- [Deployment Guide](./DEPLOYMENT.md)

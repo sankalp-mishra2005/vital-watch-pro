@@ -20,7 +20,6 @@ export default function ProtectedRoute({ children, role }: Props) {
 
   if (!isAuthenticated) return <Navigate to="/login" replace />;
 
-  // Block pending/suspended patients
   if (profile?.status === 'pending') {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
@@ -50,7 +49,6 @@ export default function ProtectedRoute({ children, role }: Props) {
     );
   }
 
-  // Role mismatch — redirect to correct dashboard
   if (userRole && userRole !== role) {
     return <Navigate to={`/${userRole}`} replace />;
   }
