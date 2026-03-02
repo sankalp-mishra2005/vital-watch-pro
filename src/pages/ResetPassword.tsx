@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
+import api from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,22 +8,13 @@ import { Label } from '@/components/ui/label';
 import { Heart, Loader2, CheckCircle } from 'lucide-react';
 
 export default function ResetPassword() {
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const navigate = useNavigate();
-
-  useEffect(() => {
-    // Listen for PASSWORD_RECOVERY event from the URL hash
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') {
-        // User has clicked the reset link and is now authenticated
-      }
-    });
-    return () => subscription.unsubscribe();
-  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,15 +29,14 @@ export default function ResetPassword() {
     }
 
     setIsLoading(true);
-    const { error: updateError } = await supabase.auth.updateUser({ password });
-    setIsLoading(false);
-
-    if (updateError) {
-      setError(updateError.message);
-    } else {
+    try {
+      await api.auth.resetPassword(email, password);
       setSuccess(true);
       setTimeout(() => navigate('/login'), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reset failed');
     }
+    setIsLoading(false);
   };
 
   if (success) {
@@ -77,6 +67,19 @@ export default function ResetPassword() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="bg-muted/50"
+                  required
+                  disabled={isLoading}
+                />
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="password">New Password</Label>
                 <Input

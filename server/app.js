@@ -1,5 +1,9 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const logger = require('./config/logger');
+const { apiLimiter } = require('./middlewares/rateLimiter');
+const errorHandler = require('./middlewares/errorHandler');
 require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
@@ -9,15 +13,41 @@ const vitalsRoutes = require('./routes/vitals');
 
 const app = express();
 
-// Middleware
+// Security headers
+app.use(helmet());
+
+// CORS whitelist
+const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:8080').split(',');
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:8080',
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
+
+// Body parsing
 app.use(express.json({ limit: '1mb' }));
 
-// Health check
-app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
+// Request logging
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.path}`, { ip: req.ip });
+  next();
+});
+
+// Global rate limit
+app.use('/api', apiLimiter);
+
+// Health check (no auth)
+app.get('/api/health', (req, res) => res.json({
+  status: 'ok',
+  version: '2.0.0',
+  uptime: process.uptime(),
+  timestamp: new Date(),
+}));
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -28,10 +58,7 @@ app.use('/api/vitals', vitalsRoutes);
 // 404
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Internal server error' });
-});
+// Global error handler
+app.use(errorHandler);
 
 module.exports = app;

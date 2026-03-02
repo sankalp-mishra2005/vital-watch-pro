@@ -1,18 +1,17 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import api from '@/lib/api';
 import {
-  generateVitals, classifyStatus,
+  classifyStatus,
   type VitalSigns, type VitalStatus,
 } from '@/services/vitalsService';
 import StatusBadge from '@/components/StatusBadge';
-import AlertPanel from '@/components/AlertPanel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Activity, LogOut, Search, Users, AlertTriangle, HeartPulse, CheckCircle, XCircle, Clock, Loader2, Bell } from 'lucide-react';
+import { Activity, LogOut, Search, Users, AlertTriangle, HeartPulse, CheckCircle, XCircle, Clock, Loader2, Bell, Wifi, WifiOff, Server } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
@@ -20,15 +19,15 @@ import { useToast } from '@/hooks/use-toast';
 interface DBPatient {
   id: string;
   full_name: string;
+  email: string;
   status: string;
   created_at: string;
   last_seen: string | null;
   phone_number: string | null;
-}
-
-interface PatientWithMockVitals extends DBPatient {
-  vitals: VitalSigns;
-  vitalStatus: VitalStatus;
+  device_name: string | null;
+  device_status: string | null;
+  device_last_seen: string | null;
+  last_vitals_at: string | null;
 }
 
 interface PendingUser {
@@ -46,15 +45,33 @@ interface AuditLog {
   details: Record<string, unknown> | null;
   created_at: string;
   user_id: string | null;
+  user_name: string | null;
 }
 
 interface DBAlert {
   id: string;
   patient_id: string;
+  patient_name: string;
   message: string;
   level: string;
   resolved: boolean;
   created_at: string;
+}
+
+interface AlertAnalytics {
+  last_24h: number;
+  last_7d: number;
+  unresolved: number;
+  total: number;
+}
+
+interface SystemHealth {
+  approvedPatients: number;
+  totalDevices: number;
+  onlineDevices: number;
+  vitalsLastHour: number;
+  serverUptime: number;
+  timestamp: string;
 }
 
 export default function AdminDashboard() {
@@ -62,171 +79,125 @@ export default function AdminDashboard() {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  // Real DB patients with mock vitals attached
-  const [patients, setPatients] = useState<PatientWithMockVitals[]>([]);
+  const [patients, setPatients] = useState<DBPatient[]>([]);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [patientsLoading, setPatientsLoading] = useState(true);
 
-  // Real DB alerts
   const [dbAlerts, setDbAlerts] = useState<DBAlert[]>([]);
+  const [alertAnalytics, setAlertAnalytics] = useState<AlertAnalytics | null>(null);
+  const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
 
-  // Approvals tab data
   const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'vitals' | 'approvals' | 'alerts' | 'audit'>('vitals');
+  const [activeTab, setActiveTab] = useState<'vitals' | 'approvals' | 'alerts' | 'audit' | 'system'>('vitals');
 
-  // Fetch approved patients from DB and attach mock vitals
   const fetchPatients = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, full_name, status, created_at, last_seen, phone_number, user_roles!inner(role)')
-      .eq('user_roles.role', 'patient')
-      .eq('status', 'approved')
-      .order('created_at', { ascending: false });
-
-    if (data && !error) {
-      const withVitals: PatientWithMockVitals[] = (data as any[]).map(p => {
-        const vitals = generateVitals(Math.random() < 0.3);
-        return {
-          id: p.id,
-          full_name: p.full_name,
-          status: p.status,
-          created_at: p.created_at,
-          last_seen: p.last_seen,
-          phone_number: p.phone_number,
-          vitals,
-          vitalStatus: classifyStatus(vitals),
-        };
-      });
-      setPatients(withVitals);
+    try {
+      const data = await api.admin.getPatients('approved');
+      setPatients(data);
+    } catch (err) {
+      console.error('Failed to fetch patients:', err);
     }
     setPatientsLoading(false);
   }, []);
 
-  // Refresh mock vitals every 5s while keeping real patient identities
-  useEffect(() => {
-    fetchPatients();
-    const interval = setInterval(() => {
-      setPatients(prev =>
-        prev.map(p => {
-          const vitals = generateVitals(Math.random() < 0.3);
-          return { ...p, vitals, vitalStatus: classifyStatus(vitals) };
-        })
-      );
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [fetchPatients]);
-
-  // Fetch only patient-role users for approvals (never admins)
   const fetchPendingUsers = useCallback(async () => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('id, full_name, status, created_at, last_seen, user_roles!inner(role)')
-      .eq('user_roles.role', 'patient')
-      .order('created_at', { ascending: false });
-
-    if (data) {
-      const mapped: PendingUser[] = (data as any[]).map(u => ({
-        id: u.id,
-        full_name: u.full_name,
-        status: u.status,
-        created_at: u.created_at,
-        last_seen: u.last_seen,
-        role: (u.user_roles as any[])?.[0]?.role || 'patient',
-      }));
-      // Deduplicate by ID
-      const unique = Array.from(new Map(mapped.map(u => [u.id, u])).values());
-      setPendingUsers(unique);
+    try {
+      const data = await api.admin.getPatients();
+      setPendingUsers(data.map((u: DBPatient) => ({
+        id: u.id, full_name: u.full_name, status: u.status,
+        created_at: u.created_at, last_seen: u.last_seen, role: 'patient',
+      })));
+    } catch (err) {
+      console.error('Failed to fetch pending:', err);
     }
   }, []);
 
-  // Fetch DB alerts
   const fetchAlerts = useCallback(async () => {
-    const { data } = await supabase
-      .from('alerts')
-      .select('*')
-      .eq('resolved', false)
-      .order('created_at', { ascending: false })
-      .limit(50);
-    if (data) setDbAlerts(data as DBAlert[]);
+    try {
+      const data = await api.admin.getAlerts(false);
+      setDbAlerts(data);
+    } catch (err) {
+      console.error('Failed to fetch alerts:', err);
+    }
   }, []);
 
-  // Fetch audit logs
+  const fetchAnalytics = useCallback(async () => {
+    try {
+      const [analytics, health] = await Promise.all([
+        api.admin.getAlertAnalytics(),
+        api.admin.getSystemHealth(),
+      ]);
+      setAlertAnalytics(analytics);
+      setSystemHealth(health);
+    } catch (err) {
+      console.error('Failed to fetch analytics:', err);
+    }
+  }, []);
+
   const fetchAuditLogs = useCallback(async () => {
-    const { data } = await supabase
-      .from('audit_logs')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(50);
-    if (data) setAuditLogs(data as AuditLog[]);
+    try {
+      const data = await api.admin.getAuditLogs();
+      setAuditLogs(data);
+    } catch (err) {
+      console.error('Failed to fetch audit logs:', err);
+    }
   }, []);
 
   useEffect(() => {
+    fetchPatients();
     fetchPendingUsers();
     fetchAlerts();
+    fetchAnalytics();
     fetchAuditLogs();
-  }, [fetchPendingUsers, fetchAlerts, fetchAuditLogs]);
 
-  // Realtime alerts subscription
-  useEffect(() => {
-    const channel = supabase
-      .channel('admin-alerts')
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'alerts',
-      }, () => {
-        fetchAlerts();
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [fetchAlerts]);
+    // Refresh data every 30s
+    const interval = setInterval(() => {
+      fetchPatients();
+      fetchAlerts();
+      fetchAnalytics();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [fetchPatients, fetchPendingUsers, fetchAlerts, fetchAnalytics, fetchAuditLogs]);
 
-  // Approve / suspend user (only patients, enforced by RLS)
   const updateUserStatus = async (userId: string, newStatus: 'approved' | 'suspended') => {
     setActionLoading(userId);
-    const { error } = await supabase
-      .from('profiles')
-      .update({ status: newStatus })
-      .eq('id', userId);
-
-    if (!error) {
-      await supabase.rpc('insert_audit_log', {
-        _user_id: userId,
-        _action: `user_${newStatus}`,
-        _details: { target_user: userId } as unknown as never,
-      });
+    try {
+      if (newStatus === 'approved') await api.admin.approvePatient(userId);
+      else await api.admin.suspendPatient(userId);
       toast({ title: `User ${newStatus}`, description: `Account has been ${newStatus}.` });
       fetchPendingUsers();
+      fetchPatients();
       fetchAuditLogs();
-    } else {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } catch (err) {
+      toast({ title: 'Error', description: err instanceof Error ? err.message : 'Failed', variant: 'destructive' });
     }
     setActionLoading(null);
   };
 
-  // Resolve alert
   const resolveAlert = async (alertId: string) => {
-    await supabase.from('alerts').update({ resolved: true }).eq('id', alertId);
-    fetchAlerts();
+    try {
+      await api.admin.resolveAlert(alertId);
+      fetchAlerts();
+      fetchAnalytics();
+    } catch (err) {
+      console.error('Resolve alert error:', err);
+    }
   };
 
   const filtered = useMemo(() => {
     return patients.filter(p => {
       const matchesSearch = p.full_name.toLowerCase().includes(search.toLowerCase()) || p.id.includes(search);
-      const matchesStatus = filterStatus === 'all' || p.vitalStatus === filterStatus;
-      return matchesSearch && matchesStatus;
+      return matchesSearch;
     });
-  }, [patients, search, filterStatus]);
+  }, [patients, search]);
 
-  const stats = useMemo(() => ({
-    total: patients.length,
-    normal: patients.filter(p => p.vitalStatus === 'normal').length,
-    warning: patients.filter(p => p.vitalStatus === 'warning').length,
-    critical: patients.filter(p => p.vitalStatus === 'critical').length,
-  }), [patients]);
+  const isDeviceOnline = (lastSeen: string | null) => {
+    if (!lastSeen) return false;
+    return Date.now() - new Date(lastSeen).getTime() < 5 * 60 * 1000;
+  };
 
   const handleLogout = async () => {
     await logout();
@@ -252,22 +223,22 @@ export default function AdminDashboard() {
       </header>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <Card className="border-border/50">
           <CardContent className="p-4 flex items-center gap-3">
             <Users className="w-8 h-8 text-muted-foreground" />
             <div>
-              <p className="text-2xl font-mono font-bold">{stats.total}</p>
-              <p className="text-xs text-muted-foreground">Approved Patients</p>
+              <p className="text-2xl font-mono font-bold">{systemHealth?.approvedPatients ?? patients.length}</p>
+              <p className="text-xs text-muted-foreground">Patients</p>
             </div>
           </CardContent>
         </Card>
         <Card className="border-border/50 glow-green">
           <CardContent className="p-4 flex items-center gap-3">
-            <HeartPulse className="w-8 h-8 text-success" />
+            <Wifi className="w-8 h-8 text-success" />
             <div>
-              <p className="text-2xl font-mono font-bold text-success">{stats.normal}</p>
-              <p className="text-xs text-muted-foreground">Normal</p>
+              <p className="text-2xl font-mono font-bold text-success">{systemHealth?.onlineDevices ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Devices Online</p>
             </div>
           </CardContent>
         </Card>
@@ -275,34 +246,44 @@ export default function AdminDashboard() {
           <CardContent className="p-4 flex items-center gap-3">
             <AlertTriangle className="w-8 h-8 text-warning" />
             <div>
-              <p className="text-2xl font-mono font-bold text-warning">{stats.warning}</p>
-              <p className="text-xs text-muted-foreground">Warning</p>
+              <p className="text-2xl font-mono font-bold text-warning">{alertAnalytics?.last_24h ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Alerts (24h)</p>
             </div>
           </CardContent>
         </Card>
         <Card className="border-border/50 glow-red">
           <CardContent className="p-4 flex items-center gap-3">
-            <AlertTriangle className="w-8 h-8 text-critical" />
+            <Bell className="w-8 h-8 text-critical" />
             <div>
-              <p className="text-2xl font-mono font-bold text-critical">{stats.critical}</p>
-              <p className="text-xs text-muted-foreground">Critical</p>
+              <p className="text-2xl font-mono font-bold text-critical">{alertAnalytics?.unresolved ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Unresolved</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="border-border/50">
+          <CardContent className="p-4 flex items-center gap-3">
+            <HeartPulse className="w-8 h-8 text-primary" />
+            <div>
+              <p className="text-2xl font-mono font-bold">{systemHealth?.vitalsLastHour ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Vitals/hr</p>
             </div>
           </CardContent>
         </Card>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b border-border/50 pb-2">
-        {(['vitals', 'approvals', 'alerts', 'audit'] as const).map(tab => (
+      <div className="flex gap-2 border-b border-border/50 pb-2 overflow-x-auto">
+        {(['vitals', 'approvals', 'alerts', 'audit', 'system'] as const).map(tab => (
           <Button
             key={tab}
             variant={activeTab === tab ? 'default' : 'ghost'}
             size="sm"
             onClick={() => setActiveTab(tab)}
-            className="capitalize"
+            className="capitalize whitespace-nowrap"
           >
             {tab === 'approvals' && <Clock className="w-4 h-4 mr-1" />}
             {tab === 'alerts' && <Bell className="w-4 h-4 mr-1" />}
+            {tab === 'system' && <Server className="w-4 h-4 mr-1" />}
             {tab}
             {tab === 'approvals' && pendingUsers.filter(u => u.status === 'pending').length > 0 && (
               <Badge variant="destructive" className="ml-1 text-xs px-1.5">
@@ -331,17 +312,6 @@ export default function AdminDashboard() {
                 className="pl-9 bg-muted/50"
               />
             </div>
-            <Select value={filterStatus} onValueChange={setFilterStatus}>
-              <SelectTrigger className="w-36 bg-muted/50">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="normal">Normal</SelectItem>
-                <SelectItem value="warning">Warning</SelectItem>
-                <SelectItem value="critical">Critical</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
           {patientsLoading ? (
             <div className="flex items-center justify-center py-12">
@@ -361,11 +331,9 @@ export default function AdminDashboard() {
                   <TableHeader>
                     <TableRow className="border-border/50 hover:bg-transparent">
                       <TableHead>Patient</TableHead>
-                      <TableHead>HR</TableHead>
-                      <TableHead>SpO₂</TableHead>
-                      <TableHead>Temp</TableHead>
-                      <TableHead>Motion</TableHead>
-                      <TableHead>Status</TableHead>
+                      <TableHead>Device</TableHead>
+                      <TableHead>Device Status</TableHead>
+                      <TableHead>Last Vitals</TableHead>
                       <TableHead>Last Seen</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -375,12 +343,29 @@ export default function AdminDashboard() {
                         onClick={() => navigate(`/admin/patient/${patient.id}`)}>
                         <TableCell>
                           <p className="font-medium text-sm">{patient.full_name || 'Unnamed'}</p>
+                          <p className="text-xs text-muted-foreground">{patient.email}</p>
                         </TableCell>
-                        <TableCell className="font-mono text-sm">{patient.vitals.heartRate}</TableCell>
-                        <TableCell className="font-mono text-sm">{patient.vitals.spo2}%</TableCell>
-                        <TableCell className="font-mono text-sm">{patient.vitals.temperature}°C</TableCell>
-                        <TableCell className="text-xs capitalize">{patient.vitals.motionStatus.replace('_', ' ')}</TableCell>
-                        <TableCell><StatusBadge status={patient.vitalStatus} /></TableCell>
+                        <TableCell className="text-sm">
+                          {patient.device_name || <span className="text-muted-foreground">No device</span>}
+                        </TableCell>
+                        <TableCell>
+                          {patient.device_status === 'active' ? (
+                            isDeviceOnline(patient.device_last_seen) ? (
+                              <Badge variant="default" className="gap-1 bg-success/20 text-success border-success/30">
+                                <Wifi className="w-3 h-3" /> Online
+                              </Badge>
+                            ) : (
+                              <Badge variant="secondary" className="gap-1">
+                                <WifiOff className="w-3 h-3" /> Offline
+                              </Badge>
+                            )
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {patient.last_vitals_at ? new Date(patient.last_vitals_at).toLocaleString() : 'Never'}
+                        </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {patient.last_seen ? new Date(patient.last_seen).toLocaleString() : 'Never'}
                         </TableCell>
@@ -394,7 +379,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* Approvals Tab — only patient-role users */}
+      {/* Approvals Tab */}
       {activeTab === 'approvals' && (
         <Card className="border-border/50">
           <CardHeader>
@@ -460,38 +445,68 @@ export default function AdminDashboard() {
 
       {/* Alerts Tab */}
       {activeTab === 'alerts' && (
-        <Card className="border-border/50">
-          <CardHeader>
-            <CardTitle className="text-sm">Active Alerts</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {dbAlerts.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active alerts.</p>
-            ) : (
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {dbAlerts.map(alert => (
-                  <div
-                    key={alert.id}
-                    className={`flex items-start gap-3 p-3 rounded-lg border ${
-                      alert.level === 'critical' ? 'border-critical/30 bg-critical/5' : 'border-warning/30 bg-warning/5'
-                    }`}
-                  >
-                    <AlertTriangle className={`w-4 h-4 mt-0.5 shrink-0 ${alert.level === 'critical' ? 'text-critical' : 'text-warning'}`} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">{alert.message}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {new Date(alert.created_at).toLocaleString()}
-                      </p>
+        <div className="space-y-4">
+          {alertAnalytics && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <Card className="border-border/50">
+                <CardContent className="p-3 text-center">
+                  <p className="text-2xl font-mono font-bold">{alertAnalytics.last_24h}</p>
+                  <p className="text-xs text-muted-foreground">Last 24h</p>
+                </CardContent>
+              </Card>
+              <Card className="border-border/50">
+                <CardContent className="p-3 text-center">
+                  <p className="text-2xl font-mono font-bold">{alertAnalytics.last_7d}</p>
+                  <p className="text-xs text-muted-foreground">Last 7 days</p>
+                </CardContent>
+              </Card>
+              <Card className="border-border/50">
+                <CardContent className="p-3 text-center">
+                  <p className="text-2xl font-mono font-bold text-critical">{alertAnalytics.unresolved}</p>
+                  <p className="text-xs text-muted-foreground">Unresolved</p>
+                </CardContent>
+              </Card>
+              <Card className="border-border/50">
+                <CardContent className="p-3 text-center">
+                  <p className="text-2xl font-mono font-bold">{alertAnalytics.total}</p>
+                  <p className="text-xs text-muted-foreground">Total</p>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+          <Card className="border-border/50">
+            <CardHeader>
+              <CardTitle className="text-sm">Active Alerts</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {dbAlerts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No active alerts.</p>
+              ) : (
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {dbAlerts.map(alert => (
+                    <div
+                      key={alert.id}
+                      className={`flex items-start gap-3 p-3 rounded-lg border ${
+                        alert.level === 'critical' ? 'border-critical/30 bg-critical/5' : 'border-warning/30 bg-warning/5'
+                      }`}
+                    >
+                      <AlertTriangle className={`w-4 h-4 mt-0.5 shrink-0 ${alert.level === 'critical' ? 'text-critical' : 'text-warning'}`} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">{alert.message}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {alert.patient_name} · {new Date(alert.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                      <Button size="sm" variant="ghost" onClick={() => resolveAlert(alert.id)} className="text-xs">
+                        Resolve
+                      </Button>
                     </div>
-                    <Button size="sm" variant="ghost" onClick={() => resolveAlert(alert.id)} className="text-xs">
-                      Resolve
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {/* Audit Tab */}
@@ -509,6 +524,9 @@ export default function AdminDashboard() {
                   <div key={log.id} className="flex items-start gap-3 p-3 rounded-lg border border-border/30 bg-muted/20">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium">{log.action}</p>
+                      {log.user_name && (
+                        <p className="text-xs text-muted-foreground">by {log.user_name}</p>
+                      )}
                       {log.details && (
                         <p className="text-xs text-muted-foreground mt-0.5 font-mono">
                           {JSON.stringify(log.details)}
@@ -524,6 +542,39 @@ export default function AdminDashboard() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {/* System Tab */}
+      {activeTab === 'system' && systemHealth && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Card className="border-border/50">
+            <CardHeader>
+              <CardTitle className="text-sm">System Health</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Approved Patients</span><span className="font-mono">{systemHealth.approvedPatients}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Total Devices</span><span className="font-mono">{systemHealth.totalDevices}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Online Devices</span><span className="font-mono text-success">{systemHealth.onlineDevices}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Vitals (last hour)</span><span className="font-mono">{systemHealth.vitalsLastHour}</span></div>
+              <div className="flex justify-between"><span className="text-sm text-muted-foreground">Server Uptime</span><span className="font-mono">{Math.floor(systemHealth.serverUptime / 3600)}h {Math.floor((systemHealth.serverUptime % 3600) / 60)}m</span></div>
+            </CardContent>
+          </Card>
+          <Card className="border-border/50">
+            <CardHeader>
+              <CardTitle className="text-sm">Alert Analytics</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {alertAnalytics && (
+                <>
+                  <div className="flex justify-between"><span className="text-sm text-muted-foreground">Last 24h</span><span className="font-mono">{alertAnalytics.last_24h}</span></div>
+                  <div className="flex justify-between"><span className="text-sm text-muted-foreground">Last 7 days</span><span className="font-mono">{alertAnalytics.last_7d}</span></div>
+                  <div className="flex justify-between"><span className="text-sm text-muted-foreground">Unresolved</span><span className="font-mono text-critical">{alertAnalytics.unresolved}</span></div>
+                  <div className="flex justify-between"><span className="text-sm text-muted-foreground">Total</span><span className="font-mono">{alertAnalytics.total}</span></div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
     </div>
   );

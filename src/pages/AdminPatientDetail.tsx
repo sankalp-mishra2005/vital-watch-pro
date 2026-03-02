@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
+import api from '@/lib/api';
 import {
-  generateVitals, generateHistoricalData, classifyStatus,
-  subscribeToVitals, type VitalSigns,
+  generateVitals, classifyStatus,
+  subscribeToVitals, fetchVitalsHistory, type VitalSigns,
 } from '@/services/vitalsService';
 import VitalCard from '@/components/VitalCard';
 import ECGWaveform from '@/components/ECGWaveform';
@@ -15,6 +15,7 @@ import { Heart, Droplets, Thermometer, Move, ArrowLeft, Loader2 } from 'lucide-r
 interface PatientProfile {
   id: string;
   full_name: string;
+  email: string;
   status: string;
   created_at: string;
   last_seen: string | null;
@@ -27,23 +28,34 @@ export default function AdminPatientDetail() {
   const [patient, setPatient] = useState<PatientProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [vitals, setVitals] = useState<VitalSigns>(generateVitals());
-  const [historicalData] = useState(() => generateHistoricalData(24));
+  const [historicalData, setHistoricalData] = useState<Array<{ time: string; heartRate: number; spo2: number; temperature: number }>>([]);
 
-  // Fetch patient profile from DB
+  // Fetch patient profile from backend
   useEffect(() => {
     if (!id) return;
     (async () => {
-      const { data } = await supabase
-        .from('profiles')
-        .select('id, full_name, status, created_at, last_seen, phone_number')
-        .eq('id', id)
-        .single();
-      if (data) setPatient(data as PatientProfile);
+      try {
+        // Use the patients list to find this patient
+        const patients = await api.admin.getPatients();
+        const found = patients.find((p: PatientProfile) => p.id === id);
+        if (found) setPatient(found);
+      } catch (err) {
+        console.error('Failed to fetch patient:', err);
+      }
       setLoading(false);
     })();
   }, [id]);
 
-  // Subscribe to mock vitals (will switch to real when hardware connected)
+  // Fetch vitals history
+  useEffect(() => {
+    if (!id) return;
+    (async () => {
+      const data = await fetchVitalsHistory(id, 24);
+      setHistoricalData(data);
+    })();
+  }, [id]);
+
+  // Subscribe to realtime vitals
   useEffect(() => {
     const unsubscribe = subscribeToVitals(id || '', (newVitals) => {
       setVitals(newVitals);

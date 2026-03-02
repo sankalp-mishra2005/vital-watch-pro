@@ -12,7 +12,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { login, role } = useAuth();
+  const { login, role, isAuthenticated, profile } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -25,11 +25,9 @@ export default function Login() {
       setError(result.error);
       setIsLoading(false);
     }
-    // Navigation handled by useEffect below
   };
 
   // Redirect on successful auth
-  const { isAuthenticated, profile } = useAuth();
   if (isAuthenticated && role && profile?.status === 'approved') {
     navigate(`/${role}`, { replace: true });
   }
@@ -37,7 +35,6 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="w-full max-w-md space-y-8">
-        {/* Logo */}
         <div className="text-center space-y-2">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 glow-green">
             <Heart className="w-8 h-8 text-primary animate-pulse-glow" />
@@ -46,7 +43,6 @@ export default function Login() {
           <p className="text-muted-foreground">IoT Health Monitoring System</p>
         </div>
 
-        {/* Login Card */}
         <Card className="border-border/50 bg-card/80 backdrop-blur">
           <CardHeader>
             <CardTitle className="text-lg text-center">Sign In</CardTitle>
@@ -55,34 +51,16 @@ export default function Login() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  className="bg-muted/50"
-                  required
-                  disabled={isLoading}
-                />
+                <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)}
+                  placeholder="you@example.com" className="bg-muted/50" required disabled={isLoading} />
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label htmlFor="password">Password</Label>
-                  <Link to="/forgot-password" className="text-xs text-primary hover:underline">
-                    Forgot password?
-                  </Link>
+                  <Link to="/forgot-password" className="text-xs text-primary hover:underline">Forgot password?</Link>
                 </div>
-                <Input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="Enter password"
-                  className="bg-muted/50"
-                  required
-                  disabled={isLoading}
-                />
+                <Input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)}
+                  placeholder="Enter password" className="bg-muted/50" required disabled={isLoading} />
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
               <Button type="submit" className="w-full" disabled={isLoading}>
@@ -90,13 +68,10 @@ export default function Login() {
                 Sign In
               </Button>
             </form>
-
             <div className="mt-6 text-center">
               <p className="text-sm text-muted-foreground">
                 Don't have an account?{' '}
-                <Link to="/signup" className="text-primary hover:underline font-medium">
-                  Sign Up
-                </Link>
+                <Link to="/signup" className="text-primary hover:underline font-medium">Sign Up</Link>
               </p>
             </div>
           </CardContent>
