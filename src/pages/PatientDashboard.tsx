@@ -1,9 +1,9 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import api from '@/lib/api';
 import {
-  generateVitals, classifyStatus, subscribeToVitals, fetchVitalsHistory,
+  classifyStatus, subscribeToVitals, fetchVitalsHistory, fetchLatestVitals, emptyVitals,
   type VitalSigns,
 } from '@/services/vitalsService';
 import VitalCard from '@/components/VitalCard';
@@ -12,8 +12,8 @@ import VitalTrendChart from '@/components/VitalTrendChart';
 import AlertPanel, { type VitalAlert } from '@/components/AlertPanel';
 import StatusBadge from '@/components/StatusBadge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Heart, Droplets, Thermometer, Move, LogOut, Activity, Wifi, WifiOff, Clock } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
+import { Heart, Droplets, Thermometer, Move, LogOut, Activity, Wifi, WifiOff, Clock, AlertTriangle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
 interface DeviceInfo {
@@ -26,13 +26,14 @@ interface DeviceInfo {
 export default function PatientDashboard() {
   const { user, profile, logout } = useAuth();
   const navigate = useNavigate();
-  const [vitals, setVitals] = useState<VitalSigns>(generateVitals());
+  const [vitals, setVitals] = useState<VitalSigns | null>(null);
   const [historicalData, setHistoricalData] = useState<Array<{ time: string; heartRate: number; spo2: number; temperature: number }>>([]);
   const [alerts, setAlerts] = useState<VitalAlert[]>([]);
   const [device, setDevice] = useState<DeviceInfo | null>(null);
   const [dbAlerts, setDbAlerts] = useState<Array<{ id: string; message: string; level: string; created_at: string }>>([]);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Fetch device info
   useEffect(() => {
     (async () => {
       try {
@@ -42,7 +43,6 @@ export default function PatientDashboard() {
     })();
   }, []);
 
-  // Fetch alert history
   useEffect(() => {
     (async () => {
       try {
@@ -52,46 +52,68 @@ export default function PatientDashboard() {
     })();
   }, []);
 
-  // Fetch vitals history
   useEffect(() => {
+    if (!user?.id) return;
     (async () => {
-      const data = await fetchVitalsHistory(user?.id || '', 24);
-      setHistoricalData(data);
+      try {
+        const data = await fetchVitalsHistory(user.id, 24);
+        setHistoricalData(data);
+      } catch {
+        setError('Unable to load vitals history.');
+      }
+    })();
+  }, [user?.id]);
+
+  // Load latest vitals from DB
+  useEffect(() => {
+    if (!user?.id) return;
+    (async () => {
+      try {
+        const latest = await fetchLatestVitals(user.id);
+        if (latest) setVitals(latest);
+      } catch {
+        // No vitals yet
+      }
     })();
   }, [user?.id]);
 
   // Subscribe to realtime vitals
   useEffect(() => {
-    const unsubscribe = subscribeToVitals(user?.id || '', (newVitals) => {
-      setVitals(newVitals);
-      const status = classifyStatus(newVitals);
-      if (status !== 'normal') {
-        setAlerts(prev => [{
-          id: `A-${Math.random().toString(36).slice(2, 8)}`,
-          patientId: user?.id || '',
-          patientName: profile?.fullName || 'Patient',
-          type: status === 'critical' ? 'CRITICAL' : 'WARNING',
-          message: `${status === 'critical' ? 'Critical' : 'Abnormal'} vitals — HR: ${newVitals.heartRate}, SpO₂: ${newVitals.spo2}%`,
-          level: status,
-          timestamp: new Date(),
-        }, ...prev].slice(0, 10));
-      }
-    });
+    if (!user?.id) return;
+    const unsubscribe = subscribeToVitals(
+      user.id,
+      (newVitals) => {
+        setVitals(newVitals);
+        const status = classifyStatus(newVitals);
+        if (status !== 'normal') {
+          setAlerts(prev => [{
+            id: `A-${Math.random().toString(36).slice(2, 8)}`,
+            patientId: user.id,
+            patientName: profile?.fullName || 'Patient',
+            type: status === 'critical' ? 'CRITICAL' : 'WARNING',
+            message: `${status === 'critical' ? 'Critical' : 'Abnormal'} vitals — HR: ${newVitals.heartRate}, SpO₂: ${newVitals.spo2}%`,
+            level: status,
+            timestamp: new Date(),
+          }, ...prev].slice(0, 10));
+        }
+      },
+      setSocketConnected
+    );
     return unsubscribe;
   }, [user?.id, profile?.fullName]);
 
+  const currentVitals = vitals || emptyVitals();
   const isDeviceOnline = device?.last_seen
     ? Date.now() - new Date(device.last_seen).getTime() < 5 * 60 * 1000
     : false;
 
-  const status = classifyStatus(vitals);
+  const status = vitals ? classifyStatus(vitals) : 'normal';
 
   const handleLogout = async () => {
     await logout();
     navigate('/login');
   };
 
-  // Combine realtime alerts with DB alert history
   const allAlerts: VitalAlert[] = [
     ...alerts,
     ...dbAlerts.map(a => ({
@@ -143,6 +165,11 @@ export default function PatientDashboard() {
               </Badge>
             )}
             {device && <span className="text-xs text-muted-foreground">{device.device_name}</span>}
+            {socketConnected && (
+              <Badge variant="default" className="gap-1 bg-primary/20 text-primary border-primary/30 text-xs">
+                Realtime Connected
+              </Badge>
+            )}
           </div>
           {device?.last_seen && (
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -153,18 +180,35 @@ export default function PatientDashboard() {
         </CardContent>
       </Card>
 
+      {error && (
+        <Card className="border-warning/30 bg-warning/5">
+          <CardContent className="p-3 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-warning" />
+            <p className="text-sm text-warning">{error}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {!vitals && (
+        <Card className="border-border/50">
+          <CardContent className="p-8 text-center">
+            <p className="text-sm text-muted-foreground">No vitals data available yet. Waiting for device data...</p>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <VitalCard title="Heart Rate" value={vitals.heartRate} unit="BPM" icon={Heart}
-          status={vitals.heartRate < 60 || vitals.heartRate > 100 ? (vitals.heartRate < 50 || vitals.heartRate > 120 ? 'critical' : 'warning') : 'normal'}
+        <VitalCard title="Heart Rate" value={currentVitals.heartRate} unit="BPM" icon={Heart}
+          status={currentVitals.heartRate < 60 || currentVitals.heartRate > 100 ? (currentVitals.heartRate < 50 || currentVitals.heartRate > 120 ? 'critical' : 'warning') : 'normal'}
           subtitle="MAX30100" />
-        <VitalCard title="SpO₂" value={vitals.spo2} unit="%" icon={Droplets}
-          status={vitals.spo2 < 90 ? 'critical' : vitals.spo2 < 95 ? 'warning' : 'normal'}
+        <VitalCard title="SpO₂" value={currentVitals.spo2} unit="%" icon={Droplets}
+          status={currentVitals.spo2 < 90 ? 'critical' : currentVitals.spo2 < 95 ? 'warning' : 'normal'}
           subtitle="MAX30100" />
-        <VitalCard title="Temperature" value={vitals.temperature} unit="°C" icon={Thermometer}
-          status={vitals.temperature > 38.5 ? 'critical' : vitals.temperature > 37.5 ? 'warning' : 'normal'}
+        <VitalCard title="Temperature" value={currentVitals.temperature} unit="°C" icon={Thermometer}
+          status={currentVitals.temperature > 38.5 ? 'critical' : currentVitals.temperature > 37.5 ? 'warning' : 'normal'}
           subtitle="MLX90614" />
-        <VitalCard title="Motion" value={vitals.motionStatus === 'fall_detected' ? 'FALL!' : vitals.motionStatus === 'active' ? 'Active' : 'Resting'} unit="" icon={Move}
-          status={vitals.motionStatus === 'fall_detected' ? 'critical' : 'normal'}
+        <VitalCard title="Motion" value={currentVitals.motionStatus === 'fall_detected' ? 'FALL!' : currentVitals.motionStatus === 'active' ? 'Active' : 'Resting'} unit="" icon={Move}
+          status={currentVitals.motionStatus === 'fall_detected' ? 'critical' : 'normal'}
           subtitle="MPU6050" />
       </div>
 
@@ -172,8 +216,18 @@ export default function PatientDashboard() {
 
       <div className="grid lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
-          <VitalTrendChart data={historicalData} title="Heart Rate & SpO₂ — Last 24h" dataKeys={['heartRate', 'spo2']} />
-          <VitalTrendChart data={historicalData} title="Temperature — Last 24h" dataKeys={['temperature']} />
+          {historicalData.length > 0 ? (
+            <>
+              <VitalTrendChart data={historicalData} title="Heart Rate & SpO₂ — Last 24h" dataKeys={['heartRate', 'spo2']} />
+              <VitalTrendChart data={historicalData} title="Temperature — Last 24h" dataKeys={['temperature']} />
+            </>
+          ) : (
+            <Card className="border-border/50">
+              <CardContent className="p-8 text-center">
+                <p className="text-sm text-muted-foreground">No historical data available yet.</p>
+              </CardContent>
+            </Card>
+          )}
         </div>
         <AlertPanel alerts={allAlerts} />
       </div>

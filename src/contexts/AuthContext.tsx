@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import api, { type LoginResponse } from '@/lib/api';
 
 type AppRole = 'admin' | 'patient';
@@ -34,6 +34,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [role, setRole] = useState<AppRole | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const statusPollRef = useRef<ReturnType<typeof setInterval>>();
 
   // Restore session from localStorage
   useEffect(() => {
@@ -45,6 +46,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setLoading(false);
   }, []);
+
+  // Poll for status updates (e.g. pending → approved) so patient doesn't need to re-login
+  useEffect(() => {
+    if (user && profile?.status === 'pending') {
+      statusPollRef.current = setInterval(async () => {
+        const refreshed = await api.auth.refreshProfile();
+        if (refreshed && refreshed.status !== 'pending') {
+          setProfile({ fullName: refreshed.fullName, status: refreshed.status as AccountStatus });
+          setRole(refreshed.role);
+        }
+      }, 10000);
+    }
+    return () => {
+      if (statusPollRef.current) clearInterval(statusPollRef.current);
+    };
+  }, [user, profile?.status]);
 
   const login = useCallback(async (email: string, password: string) => {
     try {
@@ -76,21 +93,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setProfile(null);
   }, []);
 
-  const resetPassword = useCallback(async (email: string) => {
-    try {
-      // Note: In the Node.js backend, reset requires email + newPassword.
-      // The forgot-password page only collects email, so this sends a placeholder.
-      // In production, implement email-based token flow.
-      return { error: null };
-    } catch (err: unknown) {
-      return { error: err instanceof Error ? err.message : 'Reset failed' };
-    }
+  const resetPassword = useCallback(async (_email: string) => {
+    return { error: 'Password reset requires the backend reset-password endpoint.' };
   }, []);
 
   return (
     <AuthContext.Provider value={{
       user,
-      session: user, // Compatibility
+      session: user,
       role,
       profile,
       loading,
