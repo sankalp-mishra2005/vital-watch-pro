@@ -1,9 +1,7 @@
 /**
- * VitalSync — Vitals Service Abstraction Layer
- *
- * Connected to Node.js backend via REST API + Socket.IO.
- * When ESP32 hardware is connected, vitals flow through the backend automatically.
- * For development/demo without hardware, falls back to mock data generation.
+ * VitalSync — Vitals Service
+ * All data comes from the Node.js backend via REST + Socket.IO.
+ * No mock/fallback data generation.
  */
 
 import api from '@/lib/api';
@@ -65,106 +63,65 @@ export function generateECGData(points = 200): number[] {
   return data;
 }
 
-function randomInRange(min: number, max: number) {
-  return Math.round((min + Math.random() * (max - min)) * 10) / 10;
-}
-
-export function generateVitals(biasTowardsAbnormal = false): VitalSigns {
-  const abnormal = biasTowardsAbnormal && Math.random() < 0.3;
+/** Create an empty vitals object for initial state before backend responds */
+export function emptyVitals(): VitalSigns {
   return {
-    heartRate: abnormal
-      ? Math.random() < 0.5 ? randomInRange(45, 55) : randomInRange(110, 130)
-      : randomInRange(62, 98),
-    spo2: abnormal ? randomInRange(88, 94) : randomInRange(95, 100),
-    temperature: abnormal ? randomInRange(37.8, 39.2) : randomInRange(36.2, 37.4),
-    motionStatus: abnormal && Math.random() < 0.1 ? 'fall_detected' : Math.random() < 0.3 ? 'active' : 'resting',
-    ecgData: generateECGData(200),
+    heartRate: 0,
+    spo2: 0,
+    temperature: 0,
+    motionStatus: 'resting',
+    ecgData: [],
     timestamp: new Date(),
   };
 }
 
-export function generateHistoricalData(hours = 24) {
-  const data = [];
-  const now = Date.now();
-  for (let i = hours; i >= 0; i--) {
-    const t = new Date(now - i * 3600000);
-    data.push({
-      time: t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      heartRate: randomInRange(62, 100),
-      spo2: randomInRange(94, 100),
-      temperature: randomInRange(36.0, 37.6),
-    });
-  }
-  return data;
-}
-
 export async function fetchVitalsHistory(patientId: string, limit = 24) {
-  try {
-    const data = await api.vitals.getForPatient(patientId, limit);
-    if (data && data.length > 0) {
-      return data.map((v: Record<string, unknown>) => ({
-        time: new Date(v.created_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        heartRate: v.heart_rate as number,
-        spo2: v.spo2 as number,
-        temperature: v.temperature as number,
-      })).reverse();
-    }
-  } catch {
-    // Backend not available
+  const data = await api.vitals.getForPatient(patientId, limit);
+  if (data && Array.isArray(data) && data.length > 0) {
+    return data.map((v: Record<string, unknown>) => ({
+      time: new Date(v.created_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      heartRate: v.heart_rate as number,
+      spo2: v.spo2 as number,
+      temperature: v.temperature as number,
+    })).reverse();
   }
-  return generateHistoricalData(limit);
+  return [];
 }
 
-export async function fetchLatestVitals(patientId: string): Promise<VitalSigns> {
-  try {
-    const data = await api.vitals.getLatest(patientId);
-    if (data) {
-      return {
-        heartRate: data.heart_rate,
-        spo2: data.spo2,
-        temperature: data.temperature,
-        motionStatus: data.motion_status || 'resting',
-        ecgData: data.ecg_data || generateECGData(200),
-        timestamp: new Date(data.created_at),
-      };
-    }
-  } catch {
-    // Backend not available
+export async function fetchLatestVitals(patientId: string): Promise<VitalSigns | null> {
+  const data = await api.vitals.getLatest(patientId);
+  if (data && data.heart_rate !== undefined) {
+    return {
+      heartRate: data.heart_rate,
+      spo2: data.spo2,
+      temperature: data.temperature,
+      motionStatus: data.motion_status || 'resting',
+      ecgData: data.ecg_data || generateECGData(200),
+      timestamp: new Date(data.created_at),
+    };
   }
-  return generateVitals();
+  return null;
 }
 
-// Global socket ref for cleanup
 let activeSocket: ReturnType<typeof socketIO> | null = null;
 
 export function subscribeToVitals(
   patientId: string,
-  onUpdate: (vitals: VitalSigns) => void
+  onUpdate: (vitals: VitalSigns) => void,
+  onConnectionChange?: (connected: boolean) => void
 ) {
   const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:4000';
   const wsUrl = apiUrl.replace('/api', '');
 
-  let interval: ReturnType<typeof setInterval> | null = null;
-  let connected = false;
-
-  function startMockUpdates() {
-    if (!interval) {
-      interval = setInterval(() => {
-        onUpdate(generateVitals(true));
-      }, 3000);
-    }
-  }
-
   try {
     const socket = socketIO(wsUrl, {
       transports: ['websocket', 'polling'],
-      timeout: 3000,
-      reconnectionAttempts: 3,
+      timeout: 5000,
+      reconnectionAttempts: 5,
     });
 
     socket.on('connect', () => {
-      connected = true;
-      console.log('[VitalSync] Socket connected');
+      onConnectionChange?.(true);
       socket.emit('join_patient', patientId);
     });
 
@@ -181,23 +138,20 @@ export function subscribeToVitals(
       }
     });
 
+    socket.on('disconnect', () => {
+      onConnectionChange?.(false);
+    });
+
     socket.on('connect_error', () => {
-      if (!connected) startMockUpdates();
+      onConnectionChange?.(false);
     });
 
     activeSocket = socket;
   } catch {
-    startMockUpdates();
+    onConnectionChange?.(false);
   }
 
-  // If no socket connects within 3s, start mock
-  const mockTimeout = setTimeout(() => {
-    if (!connected) startMockUpdates();
-  }, 3000);
-
   return () => {
-    clearTimeout(mockTimeout);
-    if (interval) clearInterval(interval);
     if (activeSocket) {
       activeSocket.disconnect();
       activeSocket = null;
